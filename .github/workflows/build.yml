@@ -175,6 +175,11 @@ jobs:
           # Clone KernelSU
           git clone https://github.com/tiann/KernelSU.git KernelSU
 
+          # Checkout 指定版本
+          cd KernelSU
+          git checkout "$KSU_REF" || echo "Checkout $KSU_REF failed, using default"
+          cd ..
+
           # 运行 setup.sh
           ./KernelSU/kernel/setup.sh "$KSU_REF"
 
@@ -187,6 +192,34 @@ jobs:
             rm -f common/drivers/kernelsu/include/uapi
             cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
           fi
+
+          # 计算正确的 KSU_VERSION（git commit count + base offset）
+          cd KernelSU
+          KSU_GIT_VERSION=$(git rev-list --count HEAD)
+          KSU_VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null || printf '%s' "$KSU_REF")
+          cd ..
+
+          BASE_OFFSET=10000
+          if grep -q "30000" common/drivers/kernelsu/Makefile 2>/dev/null || grep -q "30000" common/drivers/kernelsu/Kbuild 2>/dev/null; then
+            BASE_OFFSET=30000
+          elif grep -q "10000" common/drivers/kernelsu/Makefile 2>/dev/null || grep -q "10000" common/drivers/kernelsu/Kbuild 2>/dev/null; then
+            BASE_OFFSET=10000
+          fi
+          KSU_VERSION=$((BASE_OFFSET + KSU_GIT_VERSION))
+          echo "Calculated KSU_VERSION: $KSU_VERSION (base=$BASE_OFFSET, git_count=$KSU_GIT_VERSION)"
+          echo "KSU_VERSION_TAG: $KSU_VERSION_TAG"
+
+          # Patch Makefile/Kbuild 设置正确的版本号
+          for f in common/drivers/kernelsu/Makefile common/drivers/kernelsu/Kbuild; do
+            if [ -f "$f" ]; then
+              sed -i "s/ccflags-y += -DKSU_VERSION=16/ccflags-y += -DKSU_VERSION=$KSU_VERSION/g" "$f"
+              sed -i "s/KSU_VERSION := 16/KSU_VERSION := $KSU_VERSION/g" "$f"
+              sed -i "s/KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VERSION/g" "$f"
+              KSU_VERSION_TAG_SED=$(printf '%s' "$KSU_VERSION_TAG" | sed -e 's/[\/&]/\\&/g')
+              sed -i "s/KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_VERSION_TAG_SED/g" "$f"
+              echo "Patched $f"
+            fi
+          done
 
           # x86_64 编译修复
           if [ -f "common/drivers/kernelsu/syscall_hook_manager.c" ]; then
