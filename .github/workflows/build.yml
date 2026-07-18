@@ -172,25 +172,28 @@ jobs:
         run: |
           echo "Building virtual device kernel (this takes 1-3 hours)..."
 
-          # 调试：查找 kleaf 目录
-          echo "=== Looking for kleaf ==="
-          find . -name "kleaf" -type d 2>/dev/null | head -5
-          echo "=== kleaf dir contents ==="
-          ls -la build/kernel/kleaf/ 2>/dev/null || echo "kleaf dir not found"
-          echo "=== Find bazel files ==="
-          find . -name "bazel*" -type f 2>/dev/null | head -10
-          find . -name "*.WORKSPACE*" -type f 2>/dev/null | head -10
-
           # 创建符号链接
           mkdir -p tools
 
-          # 找到 bazel.sh 的实际路径
+          # 找到 bazel.sh
           BAZEL_SH=$(find . -path "*/kleaf/bazel.sh" -type f 2>/dev/null | head -1)
+          # WORKSPACE 文件可能在 kleaf/ 或 kleaf/bzlmod/ 中
           WORKSPACE_FILE=$(find . -path "*/kleaf/bazel.WORKSPACE" -type f 2>/dev/null | head -1)
+          if [ -z "$WORKSPACE_FILE" ]; then
+            WORKSPACE_FILE=$(find . -path "*/kleaf/bzlmod/bazel.WORKSPACE*" -type f 2>/dev/null | head -1)
+          fi
+          if [ -z "$WORKSPACE_FILE" ]; then
+            WORKSPACE_FILE=$(find . -name "*.WORKSPACE*" -path "*/kleaf/*" -type f 2>/dev/null | head -1)
+          fi
 
-          if [ -z "$BAZEL_SH" ] || [ -z "$WORKSPACE_FILE" ]; then
-            echo "ERROR: Could not find kleaf files"
-            ls -la build/
+          if [ -z "$BAZEL_SH" ]; then
+            echo "ERROR: Could not find bazel.sh"
+            find . -path "*/kleaf/*" -type f 2>/dev/null | head -20
+            exit 1
+          fi
+          if [ -z "$WORKSPACE_FILE" ]; then
+            echo "ERROR: Could not find WORKSPACE file"
+            find . -path "*/kleaf/*" -type f 2>/dev/null | head -20
             exit 1
           fi
 
