@@ -171,9 +171,9 @@ jobs:
           echo "Building virtual device kernel (this takes 1-3 hours)..."
 
           # 创建符号链接
-          ln -sf build/kernel/kleaf/bazel.sh tools/bazel
+          mkdir -p tools build
+          ln -sf ../build/kernel/kleaf/bazel.sh tools/bazel
           ln -sf build/kernel/kleaf/bazel.WORKSPACE WORKSPACE
-          mkdir -p build
 
           tools/bazel run \
             --verbose_failures \
