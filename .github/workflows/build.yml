@@ -48,11 +48,10 @@ jobs:
 
           echo "Fetching BUILD_INFO for build $BID ($TARGET)..."
 
-          wget -q "https://ci.android.com/builds/submitted/${BID}/${TARGET}/latest/view/BUILD_INFO" \
+          wget -q "https://ci.android.com/builds/submitted/${BID}/${TARGET}/latest/raw/BUILD_INFO" \
             -O BUILD_INFO.json
 
-          # 提取各仓库的 revision
-          python3 << 'PYEOF'
+          cat > extract_revisions.py << 'PYEOF'
           import json
 
           with open("BUILD_INFO.json") as f:
@@ -73,9 +72,11 @@ jobs:
           print(f"\nFound {len(revisions)} repositories")
           PYEOF
 
+          python3 extract_revisions.py
+
       - name: Clone kernel source
         run: |
-          python3 << 'PYEOF'
+          cat > clone_repos.py << 'PYEOF'
           import json, subprocess, os
 
           with open("revisions.json") as f:
@@ -124,6 +125,8 @@ jobs:
 
           print("\nAll repositories cloned.")
           PYEOF
+
+          python3 clone_repos.py
 
       - name: Apply KernelSU patches
         run: |
