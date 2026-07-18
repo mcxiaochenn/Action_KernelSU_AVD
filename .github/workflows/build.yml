@@ -175,8 +175,11 @@ jobs:
           # 调试：查找 kleaf 目录
           echo "=== Looking for kleaf ==="
           find . -name "kleaf" -type d 2>/dev/null | head -5
-          find . -name "bazel.sh" -type f 2>/dev/null | head -5
-          find . -name "bazel.WORKSPACE" -type f 2>/dev/null | head -5
+          echo "=== kleaf dir contents ==="
+          ls -la build/kernel/kleaf/ 2>/dev/null || echo "kleaf dir not found"
+          echo "=== Find bazel files ==="
+          find . -name "bazel*" -type f 2>/dev/null | head -10
+          find . -name "*.WORKSPACE*" -type f 2>/dev/null | head -10
 
           # 创建符号链接
           mkdir -p tools
