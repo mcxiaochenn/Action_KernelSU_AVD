@@ -1,0 +1,193 @@
+name: Build KernelSU for AVD x86_64
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: '内核分支 (从 BUILD_INFO 的 repo-init-branch 获取)'
+        required: true
+        default: 'aosp_kernel-common-android16-6.12'
+        type: string
+      build_number:
+        description: 'CI 构建号 (从 uname -r 的 -ab 后面获取)'
+        required: true
+        default: '15053784'
+        type: string
+      ksu_version:
+        description: 'KernelSU 版本'
+        required: true
+        default: 'v3.2.5'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libelf-dev libssl-dev \
+            liblz4-tool cpio lz4
+
+      - name: Setup Bazelisk
+        run: |
+          wget -q https://github.com/bazelbuild/bazelisk/releases/download/v1.19.0/bazelisk-linux-amd64 \
+            -O /usr/local/bin/bazel
+          chmod +x /usr/local/bin/bazel
+          bazel --version
+
+      - name: Fetch BUILD_INFO
+        run: |
+          BID=${{ inputs.build_number }}
+          TARGET="kernel_virt_x86_64"
+
+          echo "Fetching BUILD_INFO for build $BID ($TARGET)..."
+
+          wget -q "https://ci.android.com/builds/submitted/${BID}/${TARGET}/latest/view/BUILD_INFO" \
+            -O BUILD_INFO.json
+
+          # 提取各仓库的 revision
+          python3 << 'PYEOF'
+          import json
+
+          with open("BUILD_INFO.json") as f:
+              data = json.load(f)
+
+          projects = data["parsed_manifest"]["projects"]
+          revisions = {}
+          for p in projects:
+              revisions[p["path"]] = {
+                  "name": p["name"],
+                  "revision": p["revision"]
+              }
+              print(f"  {p['path']}: {p['revision'][:12]}")
+
+          with open("revisions.json", "w") as f:
+              json.dump(revisions, f, indent=2)
+
+          print(f"\nFound {len(revisions)} repositories")
+          PYEOF
+
+      - name: Clone kernel source
+        run: |
+          python3 << 'PYEOF'
+          import json, subprocess, os
+
+          with open("revisions.json") as f:
+              revisions = json.load(f)
+
+          # 仓库列表（按依赖顺序）
+          repos = [
+              ("kernel/common", "common"),
+              ("kernel/build", "build/kernel"),
+              ("kernel/common-modules/virtual-device", "common-modules/virtual-device"),
+              ("kernel/configs", "kernel/configs"),
+              ("kernel/tests", "kernel/tests"),
+              ("platform/prebuilts/clang/host/linux-x86", "prebuilts/clang/host/linux-x86"),
+              ("platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8",
+               "prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8"),
+              ("platform/prebuilts/build-tools", "prebuilts/build-tools"),
+              ("platform/prebuilts/clang-tools", "prebuilts/clang-tools"),
+              ("platform/prebuilts/bazel/linux-x86_64", "prebuilts/bazel/linux-x86_64"),
+              ("platform/prebuilts/jdk/jdk11", "prebuilts/jdk/jdk11"),
+              ("toolchain/prebuilts/ndk/r23", "prebuilts/ndk-r23"),
+              ("platform/external/bazel-skylib", "external/bazel-skylib"),
+              ("platform/build/bazel_common_rules", "build/bazel_common_rules"),
+              ("platform/external/stardoc", "external/stardoc"),
+              ("platform/external/python/absl-py", "external/python/absl-py"),
+              ("kernel/manifest", "kernel/manifest"),
+              ("kernel/prebuilts/build-tools", "prebuilts/kernel-build-tools"),
+              ("platform/system/tools/mkbootimg", "tools/mkbootimg"),
+          ]
+
+          for repo_name, local_path in repos:
+              if local_path not in revisions:
+                  print(f"  SKIP {local_path} (not in manifest)")
+                  continue
+
+              rev = revisions[local_path]["revision"]
+              url = f"https://android.googlesource.com/{repo_name}"
+              parent = os.path.dirname(local_path)
+              if parent:
+                  os.makedirs(parent, exist_ok=True)
+
+              print(f"  Clone {repo_name} -> {local_path} ({rev[:12]})...")
+              subprocess.run(["git", "clone", "--depth=1", url, local_path], check=True)
+              subprocess.run(["git", "-C", local_path, "fetch", "origin", rev], check=True)
+              subprocess.run(["git", "-C", local_path, "checkout", rev], check=True)
+              print(f"    OK")
+
+          print("\nAll repositories cloned.")
+          PYEOF
+
+      - name: Apply KernelSU patches
+        run: |
+          echo "Applying KernelSU ${{ inputs.ksu_version }}..."
+
+          cd common
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
+            | bash -s ${{ inputs.ksu_version }}
+
+          echo "KernelSU applied. Checking drivers/kernelsu/..."
+          ls -la drivers/kernelsu/
+
+      - name: Enable KernelSU in defconfig
+        run: |
+          cd common
+
+          GKI_CONFIG="arch/x86/configs/gki_defconfig"
+          VIRT_CONFIG="../common-modules/virtual-device/android/virtual_device_x86_64.fragment"
+
+          # 在 GKI defconfig 中启用 KSU
+          if [ -f "$GKI_CONFIG" ] && ! grep -q "CONFIG_KSU" "$GKI_CONFIG"; then
+            echo "" >> "$GKI_CONFIG"
+            echo "# KernelSU" >> "$GKI_CONFIG"
+            echo "CONFIG_KSU=y" >> "$GKI_CONFIG"
+            echo "CONFIG_KSU_ALLOWLIST=y" >> "$GKI_CONFIG"
+            echo "Added KSU to gki_defconfig"
+          fi
+
+          # 在 virtual device fragment 中启用
+          if [ -f "$VIRT_CONFIG" ] && ! grep -q "CONFIG_KSU" "$VIRT_CONFIG"; then
+            echo "" >> "$VIRT_CONFIG"
+            echo "# KernelSU" >> "$VIRT_CONFIG"
+            echo "CONFIG_KSU=y" >> "$VIRT_CONFIG"
+            echo "Added KSU to virtual device fragment"
+          fi
+
+      - name: Build kernel
+        run: |
+          echo "Building virtual device kernel (this takes 1-3 hours)..."
+
+          # 创建符号链接
+          ln -sf build/kernel/kleaf/bazel.sh tools/bazel
+          ln -sf build/kernel/kleaf/bazel.WORKSPACE WORKSPACE
+          mkdir -p build
+
+          tools/bazel run \
+            --verbose_failures \
+            --jobs=$(nproc) \
+            --make_jobs=$(nproc) \
+            --config=fast \
+            --config=stamp \
+            --lto=none \
+            //common-modules/virtual-device:virtual_device_x86_64_dist \
+            -- --dist_dir=$PWD/dist --flat
+
+          echo "Build complete!"
+          ls -lh dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelsu-avd-x86_64
+          path: |
+            dist/boot.img
+            dist/bzImage
+            dist/initramfs.img
+          retention-days: 30
