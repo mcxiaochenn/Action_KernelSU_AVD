@@ -119,9 +119,11 @@ jobs:
                   os.makedirs(parent, exist_ok=True)
 
               print(f"  Clone {repo_name} -> {local_path} ({rev[:12]})...")
-              subprocess.run(["git", "clone", "--depth=1", url, local_path], check=True)
-              subprocess.run(["git", "-C", local_path, "fetch", "origin", rev], check=True)
-              subprocess.run(["git", "-C", local_path, "checkout", rev], check=True)
+              os.makedirs(local_path, exist_ok=True)
+              subprocess.run(["git", "-C", local_path, "init"], check=True)
+              subprocess.run(["git", "-C", local_path, "remote", "add", "origin", url], check=True)
+              subprocess.run(["git", "-C", local_path, "fetch", "--depth=1", "origin", rev], check=True)
+              subprocess.run(["git", "-C", local_path, "checkout", "FETCH_HEAD"], check=True)
               print(f"    OK")
 
           print("\nAll repositories cloned.")
