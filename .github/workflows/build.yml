@@ -18,6 +18,11 @@ on:
         required: true
         default: 'v3.2.5'
         type: string
+      use_cache:
+        description: '使用构建缓存 (加速构建，但可能使用旧的源码/编译产物)'
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -45,6 +50,7 @@ jobs:
           bazel --version
 
       - name: Cache repo sync
+        if: ${{ inputs.use_cache }}
         uses: actions/cache@v4
         with:
           path: kernel/.repo
@@ -72,6 +78,7 @@ jobs:
           ls -la common/Makefile
 
       - name: Cache Bazel build
+        if: ${{ inputs.use_cache }}
         uses: actions/cache@v4
         with:
           path: |
