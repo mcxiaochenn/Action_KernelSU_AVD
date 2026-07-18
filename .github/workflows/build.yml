@@ -146,26 +146,17 @@ jobs:
 
       - name: Enable KernelSU in defconfig
         run: |
-          cd common
+          # KernelSU setup.sh 已自动修改 gki_defconfig
+          # 只在 virtual device fragment 中启用 KSU
+          VIRT_CONFIG="common-modules/virtual-device/android/virtual_device_x86_64.fragment"
 
-          GKI_CONFIG="arch/x86/configs/gki_defconfig"
-          VIRT_CONFIG="../common-modules/virtual-device/android/virtual_device_x86_64.fragment"
-
-          # 在 GKI defconfig 中启用 KSU
-          if [ -f "$GKI_CONFIG" ] && ! grep -q "CONFIG_KSU" "$GKI_CONFIG"; then
-            echo "" >> "$GKI_CONFIG"
-            echo "# KernelSU" >> "$GKI_CONFIG"
-            echo "CONFIG_KSU=y" >> "$GKI_CONFIG"
-            echo "CONFIG_KSU_ALLOWLIST=y" >> "$GKI_CONFIG"
-            echo "Added KSU to gki_defconfig"
-          fi
-
-          # 在 virtual device fragment 中启用
           if [ -f "$VIRT_CONFIG" ] && ! grep -q "CONFIG_KSU" "$VIRT_CONFIG"; then
             echo "" >> "$VIRT_CONFIG"
             echo "# KernelSU" >> "$VIRT_CONFIG"
             echo "CONFIG_KSU=y" >> "$VIRT_CONFIG"
             echo "Added KSU to virtual device fragment"
+          else
+            echo "KSU already in fragment or file not found"
           fi
 
       - name: Build kernel
