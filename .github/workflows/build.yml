@@ -218,8 +218,12 @@ jobs:
           rm -rf common/drivers/kernelsu
           cp -r "$KSU_REPO_DIR"/kernel common/drivers/kernelsu
 
-          # ReSukiSU 的 Kbuild 检查 .git 目录是否存在，创建标记
-          cp -r "$KSU_REPO_DIR"/.git common/drivers/kernelsu/.git 2>/dev/null || true
+          # ReSukiSU 的 Kbuild 检查 $(KSU_SRC)/../.git 是否存在
+          # KSU_SRC = common/drivers/kernelsu，所以需要 common/drivers/.git
+          if [ "$KSU_VARIANT" = "ReSukiSU" ]; then
+            mkdir -p common/drivers/.git
+            echo "Created .git marker for ReSukiSU Kbuild check"
+          fi
 
           # 处理 uapi
           if [ -d "$KSU_REPO_DIR/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
