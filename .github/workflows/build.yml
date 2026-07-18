@@ -211,6 +211,7 @@ jobs:
           cd ..
 
           # 运行 setup.sh
+          chmod +x ./"$KSU_REPO_DIR"/kernel/setup.sh
           ./"$KSU_REPO_DIR"/kernel/setup.sh "$KSU_REF"
 
           # 用实际文件替换 symlink（setup.sh 创建的是 symlink）
