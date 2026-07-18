@@ -65,7 +65,6 @@ jobs:
           key: repo-sync-${{ inputs.build_number }}-${{ inputs.kernel_branch }}
           restore-keys: |
             repo-sync-${{ inputs.build_number }}-
-            repo-sync-
 
       - name: Sync kernel source via manifest
         run: |
@@ -92,10 +91,10 @@ jobs:
           path: |
             kernel/out/cache
             kernel/out/.cache
-          key: bazel-${{ inputs.build_number }}-${{ hashFiles('kernel/common/Makefile') }}
+          key: bazel-${{ inputs.ksu_variant }}-${{ inputs.build_number }}-${{ hashFiles('kernel/common/Makefile') }}
           restore-keys: |
-            bazel-${{ inputs.build_number }}-
-            bazel-
+            bazel-${{ inputs.ksu_variant }}-${{ inputs.build_number }}-
+            bazel-${{ inputs.ksu_variant }}-
 
       - name: Detect kernel version
         id: metadata
