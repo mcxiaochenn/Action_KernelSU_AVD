@@ -174,7 +174,7 @@ jobs:
 
           # 创建符号链接（repo sync 不会自动创建 linkFiles）
           mkdir -p tools
-          ln -sf build/kernel/kleaf/bazel.sh tools/bazel
+          ln -sf ../build/kernel/kleaf/bazel.sh tools/bazel
           ln -sf build/kernel/kleaf/bazel.WORKSPACE WORKSPACE
 
           # 验证关键文件存在
