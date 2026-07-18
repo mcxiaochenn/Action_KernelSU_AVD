@@ -150,13 +150,24 @@ jobs:
           # 只在 virtual device fragment 中启用 KSU
           VIRT_CONFIG="common-modules/virtual-device/android/virtual_device_x86_64.fragment"
 
-          if [ -f "$VIRT_CONFIG" ] && ! grep -q "CONFIG_KSU" "$VIRT_CONFIG"; then
-            echo "" >> "$VIRT_CONFIG"
-            echo "# KernelSU" >> "$VIRT_CONFIG"
-            echo "CONFIG_KSU=y" >> "$VIRT_CONFIG"
-            echo "Added KSU to virtual device fragment"
+          if [ -f "$VIRT_CONFIG" ]; then
+            # 添加 CONFIG_KSU（如果尚未存在）
+            if ! grep -q "CONFIG_KSU" "$VIRT_CONFIG"; then
+              echo "" >> "$VIRT_CONFIG"
+              echo "# KernelSU" >> "$VIRT_CONFIG"
+              echo "CONFIG_KSU=y" >> "$VIRT_CONFIG"
+              echo "Added CONFIG_KSU=y to virtual device fragment"
+            fi
+
+            # 添加 x86 syscall dispatcher 动态 patch 选项
+            # KernelSU v3.2.0+ 在 x86_64 上需要 X86_FEATURE_INDIRECT_SAFE
+            # AVD 内核不包含该特性，启用此选项让 KernelSU 运行时动态 patch
+            if ! grep -q "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER" "$VIRT_CONFIG"; then
+              echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y" >> "$VIRT_CONFIG"
+              echo "Added CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y"
+            fi
           else
-            echo "KSU already in fragment or file not found"
+            echo "WARNING: virtual device fragment not found at $VIRT_CONFIG"
           fi
 
       - name: Build kernel
