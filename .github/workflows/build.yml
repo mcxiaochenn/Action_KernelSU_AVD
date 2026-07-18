@@ -220,9 +220,8 @@ jobs:
         with:
           name: kernelsu-avd-x86_64
           path: |
-            dist/**/bzImage
-            dist/**/boot.img
-            dist/**/initramfs.img
-            dist/**/System.map
+            kernel/dist/bzImage
+            kernel/dist/boot.img
+            kernel/dist/System.map
           retention-days: 30
           if-no-files-found: warn
