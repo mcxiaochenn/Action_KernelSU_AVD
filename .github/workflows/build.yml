@@ -13,8 +13,16 @@ on:
         required: true
         default: '15053784'
         type: string
+      ksu_variant:
+        description: 'KernelSU 变体'
+        required: true
+        type: choice
+        options:
+          - 'KernelSU'
+          - 'ReSukiSU'
+        default: 'KernelSU'
       ksu_version:
-        description: 'KernelSU 版本'
+        description: 'KernelSU 版本 (tag 或 commit)'
         required: true
         default: 'v3.2.5'
         type: string
@@ -169,32 +177,49 @@ jobs:
         run: |
           cd kernel
           KSU_REF="${{ inputs.ksu_version }}"
+          KSU_VARIANT="${{ inputs.ksu_variant }}"
 
-          echo "Integrating KernelSU $KSU_REF..."
+          echo "Integrating $KSU_VARIANT $KSU_REF..."
 
-          # Clone KernelSU
-          git clone https://github.com/tiann/KernelSU.git KernelSU
+          # 根据变体选择仓库
+          case "$KSU_VARIANT" in
+            KernelSU)
+              KSU_REPO_URL="https://github.com/tiann/KernelSU.git"
+              KSU_REPO_DIR="KernelSU"
+              ;;
+            ReSukiSU)
+              KSU_REPO_URL="https://github.com/ReSukiSU/ReSukiSU.git"
+              KSU_REPO_DIR="ReSukiSU"
+              ;;
+            *)
+              echo "Unsupported variant: $KSU_VARIANT"
+              exit 1
+              ;;
+          esac
+
+          # Clone
+          git clone "$KSU_REPO_URL" "$KSU_REPO_DIR"
 
           # Checkout 指定版本
-          cd KernelSU
+          cd "$KSU_REPO_DIR"
           git checkout "$KSU_REF" || echo "Checkout $KSU_REF failed, using default"
           cd ..
 
           # 运行 setup.sh
-          ./KernelSU/kernel/setup.sh "$KSU_REF"
+          ./"$KSU_REPO_DIR"/kernel/setup.sh "$KSU_REF"
 
           # 用实际文件替换 symlink（setup.sh 创建的是 symlink）
           rm -rf common/drivers/kernelsu
-          cp -r KernelSU/kernel common/drivers/kernelsu
+          cp -r "$KSU_REPO_DIR"/kernel common/drivers/kernelsu
 
           # 处理 uapi
-          if [ -d "KernelSU/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
+          if [ -d "$KSU_REPO_DIR/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
             rm -f common/drivers/kernelsu/include/uapi
-            cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
+            cp -r "$KSU_REPO_DIR"/uapi common/drivers/kernelsu/include/uapi
           fi
 
           # 计算正确的 KSU_VERSION（git commit count + base offset）
-          cd KernelSU
+          cd "$KSU_REPO_DIR"
           KSU_GIT_VERSION=$(git rev-list --count HEAD)
           KSU_VERSION_TAG=$(git describe --tags --abbrev=0 2>/dev/null || printf '%s' "$KSU_REF")
           cd ..
@@ -240,6 +265,14 @@ jobs:
 
           echo "KernelSU integrated. Checking drivers/kernelsu/..."
           ls common/drivers/kernelsu/
+
+          # 修复 maybe-dirty：提交所有更改让 git 工作树干净
+          # 内核的 setlocalversion 脚本会检查 git 状态，dirty 树会导致版本号异常
+          cd common
+          git add -A
+          git commit -m "Integrate $KSU_VARIANT $KSU_REF (KSU_VERSION=$KSU_VERSION)" --quiet
+          echo "Committed all patches to fix maybe-dirty version string"
+          cd ..
 
       - name: Build kernel
         run: |
