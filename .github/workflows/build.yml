@@ -175,6 +175,17 @@ jobs:
           ln -sf ../build/kernel/kleaf/bazel.sh tools/bazel
           ln -sf build/kernel/kleaf/bazel.WORKSPACE WORKSPACE
 
+          # 调试：检查符号链接
+          echo "=== Debug symlinks ==="
+          ls -la tools/bazel WORKSPACE
+          file tools/bazel WORKSPACE
+          readlink -f tools/bazel
+          readlink -f WORKSPACE
+          test -f tools/bazel && echo "tools/bazel exists" || echo "tools/bazel MISSING"
+          test -f WORKSPACE && echo "WORKSPACE exists" || echo "WORKSPACE MISSING"
+          ls -la build/kernel/kleaf/ | head -5
+          echo "=== End debug ==="
+
           tools/bazel run \
             --verbose_failures \
             --jobs=$(nproc) \
