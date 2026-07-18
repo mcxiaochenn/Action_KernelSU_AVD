@@ -288,28 +288,21 @@ jobs:
           DIST_DIR="$PWD/dist"
           mkdir -p "$DIST_DIR"
 
-          # 自动检测 dist 参数格式
-          help_output=$(tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- -h 2>&1 || true)
-          echo "$help_output" | head -20
-
-          if grep -q -- '--destdir' <<< "$help_output"; then
-            DIST_ARG="--destdir"
-          elif grep -q -- '--dist_dir' <<< "$help_output"; then
-            DIST_ARG="--dist_dir"
-          else
-            echo "Unable to detect dist argument format"
-            exit 1
-          fi
-
-          echo "Using $DIST_ARG=$DIST_DIR"
-
+          # 尝试两种 dist 参数格式（不同版本的 Kleaf 使用不同参数）
           tools/bazel run \
             --verbose_failures \
             --jobs=$(nproc) \
             --config=fast \
             --lto=none \
             //common:kernel_x86_64_dist \
-            -- ${DIST_ARG}="$DIST_DIR"
+            -- --destdir="$DIST_DIR" 2>&1 || \
+          tools/bazel run \
+            --verbose_failures \
+            --jobs=$(nproc) \
+            --config=fast \
+            --lto=none \
+            //common:kernel_x86_64_dist \
+            -- --dist_dir="$DIST_DIR"
 
           echo "Build complete!"
           ls -lh "$DIST_DIR/"
