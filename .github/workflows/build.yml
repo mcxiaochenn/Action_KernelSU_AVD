@@ -32,7 +32,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison flex libelf-dev libssl-dev \
-            liblz4-tool cpio lz4
+            liblz4-tool cpio lz4 repo
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
 
       - name: Setup Bazelisk
         run: |
@@ -42,205 +44,185 @@ jobs:
           sudo chmod +x /usr/local/bin/bazel
           bazel --version
 
-      - name: Fetch BUILD_INFO
+      - name: Sync kernel source via manifest
         run: |
           BID=${{ inputs.build_number }}
-          TARGET="kernel_virt_x86_64"
+          CI_TARGET="kernel_virt_x86_64"
 
-          echo "Fetching BUILD_INFO for build $BID ($TARGET)..."
+          echo "Fetching manifest for build $BID ($CI_TARGET)..."
+          mkdir -p kernel
+          cd kernel
 
-          wget -q "https://ci.android.com/builds/submitted/${BID}/${TARGET}/latest/raw/BUILD_INFO" \
-            -O BUILD_INFO.json
-
-          # 提取 repo-init-branch 和 revisions
-          cat > extract_info.py << 'PYEOF'
-          import json
-
-          with open("BUILD_INFO.json") as f:
-              data = json.load(f)
-
-          branch = data["repo-init-branch"]
-          print(f"repo-init-branch: {branch}")
-
-          projects = data["parsed_manifest"]["projects"]
-          revisions = {}
-          for p in projects:
-              revisions[p["path"]] = p["revision"]
-              print(f"  {p['path']}: {p['revision'][:12]}")
-
-          with open("revisions.json", "w") as f:
-              json.dump(revisions, f, indent=2)
-
-          with open("branch.txt", "w") as f:
-              f.write(branch)
-
-          print(f"\nFound {len(revisions)} repositories")
-          PYEOF
-
-          python3 extract_info.py
-
-      - name: Clone kernel source (repo sync)
-        run: |
-          BRANCH=$(cat branch.txt)
-          echo "Using branch: $BRANCH"
-
-          # 安装 repo 工具
-          mkdir -p ~/bin
-          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-          chmod a+x ~/bin/repo
-          export PATH=~/bin:$PATH
-
-          # repo init with kernel manifest
-          repo init --depth=1 \
-            -u https://android.googlesource.com/kernel/manifest \
-            -b "$BRANCH" \
-            --repo-rev=stable
-
-          # repo sync
-          repo sync -c -j$(nproc --all) --no-tags --fail-fast
+          repo init -u https://android.googlesource.com/kernel/manifest --depth=1
+          curl -Lo ".repo/manifests/manifest_${BID}.xml" \
+            "https://ci.android.com/builds/submitted/${BID}/${CI_TARGET}/latest/raw/manifest_${BID}.xml"
+          repo init -m "manifest_${BID}.xml"
+          repo sync -c -j"$(nproc --all)" --no-tags --fail-fast
 
           echo "repo sync complete"
+          ls -la common/Makefile
 
-      - name: Checkout exact revisions
+      - name: Detect kernel version
+        id: metadata
         run: |
-          cat > checkout_revisions.py << 'PYEOF'
-          import json, subprocess
+          cd kernel
+          VERSION=$(grep '^VERSION = ' common/Makefile | awk '{print $3}')
+          PATCHLEVEL=$(grep '^PATCHLEVEL = ' common/Makefile | awk '{print $3}')
+          SUBLEVEL=$(grep '^SUBLEVEL = ' common/Makefile | awk '{print $3}')
+          KERNEL_VERSION="$VERSION.$PATCHLEVEL"
+          echo "Detected kernel: $KERNEL_VERSION.$SUBLEVEL"
+          echo "kernel_version=$KERNEL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "sublevel=$SUBLEVEL" >> "$GITHUB_OUTPUT"
 
-          with open("revisions.json") as f:
-              revisions = json.load(f)
-
-          for path, rev in revisions.items():
-              import os
-              if not os.path.isdir(os.path.join(path, ".git")):
-                  print(f"  SKIP {path} (not cloned)")
-                  continue
-
-              print(f"  Checkout {path} -> {rev[:12]}...")
-              subprocess.run(["git", "-C", path, "fetch", "--depth=1", "origin", rev],
-                           check=False, capture_output=True)
-              result = subprocess.run(["git", "-C", path, "checkout", rev],
-                            capture_output=True, text=True)
-              if result.returncode == 0:
-                  print(f"    OK")
-              else:
-                  # 尝试 FETCH_HEAD
-                  subprocess.run(["git", "-C", path, "checkout", "FETCH_HEAD"],
-                               check=False, capture_output=True)
-                  print(f"    Used FETCH_HEAD")
-
-          print("\nAll revisions checked out.")
-          PYEOF
-
-          python3 checkout_revisions.py
-
-      - name: Apply KernelSU patches
+      - name: Apply x86_64 syscall hardening patches
         run: |
-          echo "Applying KernelSU ${{ inputs.ksu_version }}..."
+          cd kernel/common
+          KERNEL_VERSION="${{ steps.metadata.outputs.kernel_version }}"
 
-          cd common
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
-            | bash -s ${{ inputs.ksu_version }}
+          echo "Applying x86_64 syscall hardening patches for kernel $KERNEL_VERSION..."
 
-          echo "KernelSU applied. Checking drivers/kernelsu/..."
-          ls -la drivers/kernelsu/
+          case "$KERNEL_VERSION" in
+            6.12)
+              # Android 16 kernel 6.12: 手动添加 X86_FEATURE_INDIRECT_SAFE
+              if ! grep -q 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h; then
+                sed -i '/X86_FEATURE_INDIRECT_THUNK_ITS/a #define X86_FEATURE_INDIRECT_SAFE\t(21*32 + 7) /* "" Indirect branches can be used for syscalls */' arch/x86/include/asm/cpufeatures.h
+                echo "Added X86_FEATURE_INDIRECT_SAFE to cpufeatures.h"
+              fi
 
-      - name: Enable KernelSU in defconfig
+              if ! grep -q 'cpu_show_syscall_hardening' include/linux/cpu.h; then
+                sed -i '/extern ssize_t cpu_show_tsa/i #if defined(CONFIG_X86) || defined(CONFIG_X86_64)\nextern ssize_t cpu_show_syscall_hardening(struct device *dev,\n\t\t\t\t\t       struct device_attribute *attr, char *buf);\n#endif\n' include/linux/cpu.h
+                echo "Added cpu_show_syscall_hardening to cpu.h"
+              fi
+
+              # 应用 syscall hardening 补丁
+              curl -L "https://github.com/android-generic/kernel-zenith/commit/dd2c602268fdc81f4d3b662f6a15142ac0ec7bcd.patch" -o /tmp/ksu-patch1.patch
+              git apply --check --whitespace=fix \
+                --exclude=arch/x86/include/asm/cpufeatures.h \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                /tmp/ksu-patch1.patch
+              git apply --whitespace=fix \
+                --exclude=arch/x86/include/asm/cpufeatures.h \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                /tmp/ksu-patch1.patch
+              echo "Applied patch 1"
+
+              curl -L "https://github.com/android-generic/kernel-zenith/commit/7d99237ae5da61c19447138da3282ae37d43857b.patch" -o /tmp/ksu-patch2.patch
+              git apply --check --whitespace=fix \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                --exclude=include/linux/cpu.h \
+                /tmp/ksu-patch2.patch
+              git apply --whitespace=fix \
+                --exclude=arch/x86/kernel/cpu/bugs.c \
+                --exclude=include/linux/cpu.h \
+                /tmp/ksu-patch2.patch
+              echo "Applied patch 2"
+
+              # 默认关闭 syscall_hardening（AVD 没有稳定的 -append 选项）
+              if grep -q 'syscall_hardening __ro_after_init = SYSCALL_HARDENING_ON;' arch/x86/kernel/cpu/common.c; then
+                sed -i 's/syscall_hardening __ro_after_init = SYSCALL_HARDENING_ON;/syscall_hardening __ro_after_init = SYSCALL_HARDENING_OFF;/' arch/x86/kernel/cpu/common.c
+                echo "Defaulted syscall_hardening to OFF"
+              fi
+              ;;
+            6.6)
+              curl -L "https://github.com/android-generic/kernel_common/commit/fe9a9b4c320577c30e1f22d04039e414c6a3cdec.patch" -o /tmp/ksu-patch1.patch
+              git apply --whitespace=fix /tmp/ksu-patch1.patch
+              curl -L "https://github.com/android-generic/kernel_common/commit/df772e99e392f24b395ceaf7b26974e3e4828ee9.patch" -o /tmp/ksu-patch2.patch
+              git apply --whitespace=fix /tmp/ksu-patch2.patch
+              echo "Applied 6.6 patches"
+              ;;
+            *)
+              echo "No syscall hardening patches needed for kernel $KERNEL_VERSION"
+              ;;
+          esac
+
+          echo "=== Verify X86_FEATURE_INDIRECT_SAFE ==="
+          grep 'X86_FEATURE_INDIRECT_SAFE' arch/x86/include/asm/cpufeatures.h || echo "NOT FOUND"
+
+      - name: Integrate KernelSU
         run: |
-          # KernelSU setup.sh 已自动修改 gki_defconfig
-          # 在 gki_defconfig 中添加 x86 syscall dispatcher 动态 patch 选项
-          # KernelSU v3.2.0+ 在 x86_64 上需要 X86_FEATURE_INDIRECT_SAFE
-          # AVD 内核不包含该特性，启用此选项让 KernelSU 运行时动态 patch
-          GKI_CONFIG="common/arch/x86/configs/gki_defconfig"
+          cd kernel
+          KSU_REF="${{ inputs.ksu_version }}"
 
-          if [ -f "$GKI_CONFIG" ]; then
-            if ! grep -q "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER" "$GKI_CONFIG"; then
-              echo "" >> "$GKI_CONFIG"
-              echo "# KernelSU x86 syscall dispatcher patch" >> "$GKI_CONFIG"
-              echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y" >> "$GKI_CONFIG"
-              echo "Added CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y to gki_defconfig"
-            else
-              echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER already in gki_defconfig"
-            fi
-          else
-            echo "ERROR: gki_defconfig not found at $GKI_CONFIG"
-            exit 1
+          echo "Integrating KernelSU $KSU_REF..."
+
+          # Clone KernelSU
+          git clone https://github.com/tiann/KernelSU.git KernelSU
+
+          # 运行 setup.sh
+          ./KernelSU/kernel/setup.sh "$KSU_REF"
+
+          # 用实际文件替换 symlink（setup.sh 创建的是 symlink）
+          rm -rf common/drivers/kernelsu
+          cp -r KernelSU/kernel common/drivers/kernelsu
+
+          # 处理 uapi
+          if [ -d "KernelSU/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
+            rm -f common/drivers/kernelsu/include/uapi
+            cp -r KernelSU/uapi common/drivers/kernelsu/include/uapi
           fi
 
-          # 同时在 virtual device fragment 中启用（如果存在）
-          VIRT_CONFIG=$(find . -name "virtual_device_x86_64.fragment" -type f 2>/dev/null | head -1)
-          if [ -n "$VIRT_CONFIG" ]; then
-            echo "Found fragment: $VIRT_CONFIG"
-            if ! grep -q "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER" "$VIRT_CONFIG"; then
-              echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y" >> "$VIRT_CONFIG"
-              echo "Added CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y to fragment"
+          # x86_64 编译修复
+          if [ -f "common/drivers/kernelsu/syscall_hook_manager.c" ]; then
+            if ! grep -qxF '#include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
+              sed -i '/#include <linux\/tracepoint.h>/a #include <linux/sched/task_stack.h>' common/drivers/kernelsu/syscall_hook_manager.c
             fi
-          else
-            echo "INFO: virtual device fragment not found, using gki_defconfig only"
+            if ! grep -qxF '#include <asm/compat.h>' common/drivers/kernelsu/syscall_hook_manager.c; then
+              sed -i '/#include <asm\/syscall.h>/a #if defined(__x86_64__)\n#include <asm/compat.h>\n#endif' common/drivers/kernelsu/syscall_hook_manager.c
+            fi
           fi
 
-          # 验证配置已添加
-          echo "=== gki_defconfig KSU entries ==="
-          grep -i "KSU" "$GKI_CONFIG" || echo "(none)"
+          if [ -f "common/drivers/kernelsu/hook/patch_memory.h" ]; then
+            if ! grep -qxF '#include <linux/bug.h>' common/drivers/kernelsu/hook/patch_memory.h; then
+              sed -i '/#include <linux\/types.h>/a #include <linux/bug.h>' common/drivers/kernelsu/hook/patch_memory.h
+            fi
+            sed -i 's|"asm/patching.h"|"asm/text-patching.h"|g' common/drivers/kernelsu/hook/patch_memory.h
+          fi
+
+          echo "KernelSU integrated. Checking drivers/kernelsu/..."
+          ls common/drivers/kernelsu/
 
       - name: Build kernel
         run: |
-          echo "Building virtual device kernel (this takes 1-3 hours)..."
+          cd kernel
+          echo "Building GKI kernel (this takes 1-3 hours)..."
 
-          # 创建符号链接
-          mkdir -p tools
+          DIST_DIR="$PWD/dist"
+          mkdir -p "$DIST_DIR"
 
-          # 找到 bazel.sh
-          BAZEL_SH=$(find . -path "*/kleaf/bazel.sh" -type f 2>/dev/null | head -1)
-          # WORKSPACE 文件可能在 kleaf/ 或 kleaf/bzlmod/ 中
-          WORKSPACE_FILE=$(find . -path "*/kleaf/bazel.WORKSPACE" -type f 2>/dev/null | head -1)
-          if [ -z "$WORKSPACE_FILE" ]; then
-            WORKSPACE_FILE=$(find . -path "*/kleaf/bzlmod/bazel.WORKSPACE*" -type f 2>/dev/null | head -1)
-          fi
-          if [ -z "$WORKSPACE_FILE" ]; then
-            WORKSPACE_FILE=$(find . -name "*.WORKSPACE*" -path "*/kleaf/*" -type f 2>/dev/null | head -1)
-          fi
+          # 自动检测 dist 参数格式
+          help_output=$(tools/bazel run --config=fast --lto=none //common:kernel_x86_64_dist -- -h 2>&1 || true)
+          echo "$help_output" | head -20
 
-          if [ -z "$BAZEL_SH" ]; then
-            echo "ERROR: Could not find bazel.sh"
-            find . -path "*/kleaf/*" -type f 2>/dev/null | head -20
-            exit 1
-          fi
-          if [ -z "$WORKSPACE_FILE" ]; then
-            echo "ERROR: Could not find WORKSPACE file"
-            find . -path "*/kleaf/*" -type f 2>/dev/null | head -20
+          if grep -q -- '--destdir' <<< "$help_output"; then
+            DIST_ARG="--destdir"
+          elif grep -q -- '--dist_dir' <<< "$help_output"; then
+            DIST_ARG="--dist_dir"
+          else
+            echo "Unable to detect dist argument format"
             exit 1
           fi
 
-          echo "Found bazel.sh: $BAZEL_SH"
-          echo "Found WORKSPACE: $WORKSPACE_FILE"
-
-          ln -sf "../$BAZEL_SH" tools/bazel
-          ln -sf "$WORKSPACE_FILE" WORKSPACE
-
-          # 验证
-          test -f tools/bazel || { echo "ERROR: tools/bazel still missing"; exit 1; }
-          test -f WORKSPACE || { echo "ERROR: WORKSPACE still missing"; exit 1; }
-          echo "Symlinks OK"
+          echo "Using $DIST_ARG=$DIST_DIR"
 
           tools/bazel run \
             --verbose_failures \
             --jobs=$(nproc) \
-            --make_jobs=$(nproc) \
             --config=fast \
-            --config=stamp \
             --lto=none \
-            //common-modules/virtual-device:virtual_device_x86_64_dist \
-            -- --dist_dir=$PWD/dist --flat
+            //common:kernel_x86_64_dist \
+            -- ${DIST_ARG}="$DIST_DIR"
 
           echo "Build complete!"
-          ls -lh dist/
+          ls -lh "$DIST_DIR/"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: kernelsu-avd-x86_64
           path: |
-            dist/boot.img
-            dist/bzImage
-            dist/initramfs.img
+            dist/**/bzImage
+            dist/**/boot.img
+            dist/**/initramfs.img
+            dist/**/System.map
           retention-days: 30
+          if-no-files-found: warn
