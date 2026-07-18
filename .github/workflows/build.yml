@@ -218,6 +218,9 @@ jobs:
           rm -rf common/drivers/kernelsu
           cp -r "$KSU_REPO_DIR"/kernel common/drivers/kernelsu
 
+          # ReSukiSU 的 Kbuild 检查 .git 目录是否存在，创建标记
+          cp -r "$KSU_REPO_DIR"/.git common/drivers/kernelsu/.git 2>/dev/null || true
+
           # 处理 uapi
           if [ -d "$KSU_REPO_DIR/uapi" ] && [ -L "common/drivers/kernelsu/include/uapi" ]; then
             rm -f common/drivers/kernelsu/include/uapi
