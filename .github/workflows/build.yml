@@ -200,9 +200,15 @@ jobs:
           # Clone
           git clone "$KSU_REPO_URL" "$KSU_REPO_DIR"
 
-          # Checkout 指定版本
+          # Checkout 指定版本（支持 latest = 使用默认分支最新 commit）
           cd "$KSU_REPO_DIR"
-          git checkout "$KSU_REF" || echo "Checkout $KSU_REF failed, using default"
+          if [ "$KSU_REF" = "latest" ]; then
+            echo "Using latest commit on default branch"
+            KSU_REF=$(git rev-parse HEAD)
+            echo "Resolved latest to: $KSU_REF"
+          else
+            git checkout "$KSU_REF" || echo "Checkout $KSU_REF failed, using default"
+          fi
           cd ..
 
           # 运行 setup.sh
