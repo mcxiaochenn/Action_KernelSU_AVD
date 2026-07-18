@@ -44,6 +44,15 @@ jobs:
           sudo chmod +x /usr/local/bin/bazel
           bazel --version
 
+      - name: Cache repo sync
+        uses: actions/cache@v4
+        with:
+          path: kernel/.repo
+          key: repo-sync-${{ inputs.build_number }}-${{ inputs.kernel_branch }}
+          restore-keys: |
+            repo-sync-${{ inputs.build_number }}-
+            repo-sync-
+
       - name: Sync kernel source via manifest
         run: |
           BID=${{ inputs.build_number }}
@@ -61,6 +70,17 @@ jobs:
 
           echo "repo sync complete"
           ls -la common/Makefile
+
+      - name: Cache Bazel build
+        uses: actions/cache@v4
+        with:
+          path: |
+            kernel/out/cache
+            kernel/out/.cache
+          key: bazel-${{ inputs.build_number }}-${{ hashFiles('kernel/common/Makefile') }}
+          restore-keys: |
+            bazel-${{ inputs.build_number }}-
+            bazel-
 
       - name: Detect kernel version
         id: metadata
