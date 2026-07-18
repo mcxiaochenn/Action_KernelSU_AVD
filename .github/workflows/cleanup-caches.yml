@@ -1,0 +1,103 @@
+name: Cleanup Build Caches
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_days:
+        description: '保留最近 N 天的缓存 (0 = 全部删除)'
+        required: true
+        default: '7'
+        type: string
+      cache_type:
+        description: '要清理的缓存类型'
+        required: true
+        type: choice
+        options:
+          - 'all'
+          - 'repo-sync'
+          - 'bazel'
+        default: 'all'
+      dry_run:
+        description: '试运行模式 (只显示会删除的内容，不实际删除)'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Cleanup build caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_DAYS: ${{ inputs.keep_days }}
+          CACHE_TYPE: ${{ inputs.cache_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          REPO="${{ github.repository }}"
+          echo "=== Cache Cleanup ==="
+          echo "Repository: $REPO"
+          echo "Keep days: $KEEP_DAYS"
+          echo "Cache type: $CACHE_TYPE"
+          echo "Dry run: $DRY_RUN"
+          echo ""
+
+          # 计算截止日期
+          if [ "$KEEP_DAYS" -gt 0 ]; then
+            CUTOFF=$(date -d "-${KEEP_DAYS} days" -u +%Y-%m-%dT%H:%M:%SZ)
+            echo "Cutoff date: $CUTOFF"
+          else
+            CUTOFF="9999-12-31T23:59:59Z"
+            echo "Will delete ALL caches"
+          fi
+          echo ""
+
+          # 获取所有缓存
+          ALL_CACHES=$(gh api "repos/$REPO/actions/caches" --paginate --jq '.actions_caches[]' 2>/dev/null || echo "")
+          if [ -z "$ALL_CACHES" ]; then
+            echo "No caches found"
+            exit 0
+          fi
+
+          # 按类型过滤
+          if [ "$CACHE_TYPE" = "repo-sync" ]; then
+            FILTER='repo-sync-'
+          elif [ "$CACHE_TYPE" = "bazel" ]; then
+            FILTER='bazel-'
+          else
+            FILTER=''
+          fi
+
+          TOTAL=0
+          DELETED=0
+
+          echo "$ALL_CACHES" | jq -r --arg filter "$FILTER" --arg cutoff "$CUTOFF" '
+            select(.key | startswith($filter)) |
+            select(.created_at < $cutoff) |
+            "\(.id)\t\(.key)\t\(.size_in_bytes)\t\(.created_at)
+          ' | while IFS=$'\t' read -r ID KEY SIZE CREATED; do
+            TOTAL=$((TOTAL + 1))
+            SIZE_MB=$((SIZE / 1024 / 1024))
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[DRY RUN] Would delete: $KEY ($SIZE_MB MB, $CREATED)"
+            else
+              echo "Deleting: $KEY ($SIZE_MB MB, $CREATED)"
+              gh api --method DELETE "repos/$REPO/actions/caches/$ID" 2>/dev/null && DELETED=$((DELETED + 1)) || echo "  Failed to delete $ID"
+            fi
+          done
+
+          echo ""
+          echo "=== Cache cleanup complete ==="
+
+          # 显示剩余缓存
+          echo ""
+          echo "--- Remaining caches ---"
+          REMAINING=$(gh api "repos/$REPO/actions/caches" --jq '.total_count' 2>/dev/null || echo "0")
+          echo "Total remaining caches: $REMAINING"
+
+          REMAINING_SIZE=$(gh api "repos/$REPO/actions/caches" --jq '.actions_caches | map(.size_in_bytes) | add // 0' 2>/dev/null || echo "0")
+          REMAINING_MB=$((REMAINING_SIZE / 1024 / 1024))
+          echo "Total remaining size: ${REMAINING_MB} MB"

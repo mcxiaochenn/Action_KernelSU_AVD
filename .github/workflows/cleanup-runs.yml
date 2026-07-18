@@ -1,0 +1,64 @@
+name: Cleanup Old Workflow Runs
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_runs:
+        description: '保留最近的运行次数 (0 = 全部删除)'
+        required: true
+        default: '5'
+        type: string
+      dry_run:
+        description: '试运行模式 (只显示会删除的内容，不实际删除)'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Cleanup old workflow runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_RUNS: ${{ inputs.keep_runs }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          REPO="${{ github.repository }}"
+          WORKFLOW_NAME="Build KernelSU for AVD x86_64"
+
+          echo "=== Workflow Run Cleanup ==="
+          echo "Repository: $REPO"
+          echo "Keep runs: $KEEP_RUNS"
+          echo "Dry run: $DRY_RUN"
+          echo ""
+
+          for STATUS in completed failure cancelled; do
+            echo "--- ${STATUS} runs ---"
+            RUNS=$(gh run list --repo "$REPO" --workflow="$WORKFLOW_NAME" --status=$STATUS --limit=100 --json databaseId,createdAt,conclusion --jq 'sort_by(.createdAt) | reverse' 2>/dev/null || echo "[]")
+            RUN_COUNT=$(echo "$RUNS" | jq 'length')
+            echo "Total ${STATUS} runs: $RUN_COUNT"
+
+            if [ "$RUN_COUNT" -gt "$KEEP_RUNS" ]; then
+              DELETE_COUNT=$((RUN_COUNT - KEEP_RUNS))
+              echo "Will delete $DELETE_COUNT ${STATUS} runs (keeping $KEEP_RUNS)"
+
+              TO_DELETE=$(echo "$RUNS" | jq -r ".[$KEEP_RUNS:] | .[].databaseId")
+              for RUN_ID in $TO_DELETE; do
+                RUN_INFO=$(echo "$RUNS" | jq -r ".[] | select(.databaseId == $RUN_ID) | .createdAt")
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "  [DRY RUN] Would delete: $RUN_ID ($RUN_INFO)"
+                else
+                  echo "  Deleting: $RUN_ID ($RUN_INFO)"
+                  gh run delete "$RUN_ID" --repo "$REPO" 2>/dev/null || echo "    Failed to delete $RUN_ID"
+                fi
+              done
+            else
+              echo "No ${STATUS} runs to delete"
+            fi
+            echo ""
+          done
+
+          echo "=== Cleanup complete ==="
