@@ -147,28 +147,40 @@ jobs:
       - name: Enable KernelSU in defconfig
         run: |
           # KernelSU setup.sh 已自动修改 gki_defconfig
-          # 只在 virtual device fragment 中启用 KSU
-          VIRT_CONFIG="common-modules/virtual-device/android/virtual_device_x86_64.fragment"
+          # 在 gki_defconfig 中添加 x86 syscall dispatcher 动态 patch 选项
+          # KernelSU v3.2.0+ 在 x86_64 上需要 X86_FEATURE_INDIRECT_SAFE
+          # AVD 内核不包含该特性，启用此选项让 KernelSU 运行时动态 patch
+          GKI_CONFIG="common/arch/x86/configs/gki_defconfig"
 
-          if [ -f "$VIRT_CONFIG" ]; then
-            # 添加 CONFIG_KSU（如果尚未存在）
-            if ! grep -q "CONFIG_KSU" "$VIRT_CONFIG"; then
-              echo "" >> "$VIRT_CONFIG"
-              echo "# KernelSU" >> "$VIRT_CONFIG"
-              echo "CONFIG_KSU=y" >> "$VIRT_CONFIG"
-              echo "Added CONFIG_KSU=y to virtual device fragment"
-            fi
-
-            # 添加 x86 syscall dispatcher 动态 patch 选项
-            # KernelSU v3.2.0+ 在 x86_64 上需要 X86_FEATURE_INDIRECT_SAFE
-            # AVD 内核不包含该特性，启用此选项让 KernelSU 运行时动态 patch
-            if ! grep -q "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER" "$VIRT_CONFIG"; then
-              echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y" >> "$VIRT_CONFIG"
-              echo "Added CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y"
+          if [ -f "$GKI_CONFIG" ]; then
+            if ! grep -q "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER" "$GKI_CONFIG"; then
+              echo "" >> "$GKI_CONFIG"
+              echo "# KernelSU x86 syscall dispatcher patch" >> "$GKI_CONFIG"
+              echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y" >> "$GKI_CONFIG"
+              echo "Added CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y to gki_defconfig"
+            else
+              echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER already in gki_defconfig"
             fi
           else
-            echo "WARNING: virtual device fragment not found at $VIRT_CONFIG"
+            echo "ERROR: gki_defconfig not found at $GKI_CONFIG"
+            exit 1
           fi
+
+          # 同时在 virtual device fragment 中启用（如果存在）
+          VIRT_CONFIG=$(find . -name "virtual_device_x86_64.fragment" -type f 2>/dev/null | head -1)
+          if [ -n "$VIRT_CONFIG" ]; then
+            echo "Found fragment: $VIRT_CONFIG"
+            if ! grep -q "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER" "$VIRT_CONFIG"; then
+              echo "CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y" >> "$VIRT_CONFIG"
+              echo "Added CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=y to fragment"
+            fi
+          else
+            echo "INFO: virtual device fragment not found, using gki_defconfig only"
+          fi
+
+          # 验证配置已添加
+          echo "=== gki_defconfig KSU entries ==="
+          grep -i "KSU" "$GKI_CONFIG" || echo "(none)"
 
       - name: Build kernel
         run: |
